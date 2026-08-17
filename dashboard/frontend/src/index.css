@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  html, body, #root { height: 100%; }
+
+  body {
+    @apply antialiased bg-ink text-text font-display;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.01em;
+    /* ambient depth: a soft teal wash top-left, fading to ink */
+    background:
+      radial-gradient(1100px 600px at 12% -8%, rgba(45,212,191,0.06), transparent 60%),
+      radial-gradient(900px 500px at 100% 0%, rgba(255,178,36,0.035), transparent 55%),
+      #080A0E;
+    background-attachment: fixed;
+  }
+
+  .tnum { font-variant-numeric: tabular-nums; }
+}
+
+@layer components {
+  /* Raised panel with an inner top highlight + soft drop, which gives real depth */
+  .panel {
+    @apply rounded-xl border border-line;
+    background: linear-gradient(180deg, rgba(255,255,255,0.022), rgba(255,255,255,0) 40%), #0F131A;
+    box-shadow: 0 1px 0 0 rgba(255,255,255,0.03) inset, 0 12px 34px -18px rgba(0,0,0,0.75);
+  }
+
+  .eyebrow {
+    @apply font-mono text-[10.5px] uppercase text-faint;
+    letter-spacing: 0.2em;
+  }
+
+  /* a lit status lamp */
+  .lamp { @apply rounded-full; }
+}
+
+/* live breathing pulse */
+@keyframes breathe { 0%,100% { opacity: 1 } 50% { opacity: 0.4 } }
+.breathe { animation: breathe 2.4s ease-in-out infinite; }
+
+/* subtle sheen sweep across the hero on load */
+@keyframes rise { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+.rise { animation: rise 0.5s cubic-bezier(0.22,1,0.36,1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .breathe, .rise { animation: none; }
+}
+
+/* recharts: kill the default focus outline + tuck the surface */
+.recharts-surface { overflow: visible; }
+.recharts-cartesian-grid line { stroke: #212834; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #212834; border-radius: 6px; }
+::-webkit-scrollbar-thumb:hover { background: #2c3543; }

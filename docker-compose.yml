@@ -1,0 +1,59 @@
+name: capture-desk
+
+# One command brings up the collector + the dashboard, sharing a data volume.
+#   1. cp config.example.toml config.toml   # edit pairs / speed / optional key
+#   2. cp .env.example .env                  # optional: data path, dashboard port
+#   3. docker compose up -d --build
+#   -> dashboard at http://localhost:${DASHBOARD_PORT:-3010}
+#
+# DATA_PATH (in .env) points capture at a host disk; unset uses a named volume.
+# Data grows ~30-50 GB/day at all ~500 pairs / 500ms — size accordingly.
+
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: capture-desk-collector
+    container_name: capture-desk-collector
+    restart: unless-stopped
+    # Docker's default is SIGTERM then SIGKILL after 10s. A full-universe shutdown
+    # has to stop ingest, drain the message handler, and flush every open CSV
+    # buffer (thousands of files at ~500 symbols), which does not fit in 10s. Kill
+    # it early and the buffered rows are lost, so allow the drain to finish.
+    stop_grace_period: 150s
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+      - ${DATA_PATH:-capture-data}:/app/data
+      - capture-logs:/app/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: capture-desk-dashboard
+    container_name: capture-desk-dashboard
+    restart: unless-stopped
+    depends_on: [collector]
+    environment:
+      DATA_DIR: /data
+      LOG_DIR: /logs
+      COLLECTOR_CONFIG: /config/config.toml
+    volumes:
+      # rw: the dashboard drops the restart sentinel under /data/control
+      - ${DATA_PATH:-capture-data}:/data
+      - capture-logs:/logs:ro
+      # rw: the Config tab edits config.toml; the collector re-reads it on restart
+      - ./config.toml:/config/config.toml
+    ports:
+      # Bound to localhost by default — the dashboard has no auth (see README).
+      # To reach it from other machines, drop the 127.0.0.1 prefix (trusted LAN only).
+      - "127.0.0.1:${DASHBOARD_PORT:-3010}:8000"
+
+volumes:
+  capture-data:
+  capture-logs:

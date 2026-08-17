@@ -1,0 +1,11 @@
+# jemalloc runtime options, embedded into the jemalloc-sys build at compile time.
+#
+# background_thread:true runs a dedicated purge thread so freed pages are returned to the
+# OS on the decay timer even during idle periods. Without it, decay is lazy (only fires on
+# later allocations in an arena), so a quiet stretch lets the high-water ratchet up — the
+# exact glibc behaviour we're replacing. dirty/muzzy decay (10s) tune how quickly pages go
+# back. Together these keep the collector's RSS bounded over a multi-day run.
+#
+# Only affects Linux builds (jemalloc is gated to Linux in Cargo.toml); ignored elsewhere.
+[env]
+JEMALLOC_SYS_WITH_MALLOC_CONF = "background_thread:true,dirty_decay_ms:10000,muzzy_decay_ms:10000"

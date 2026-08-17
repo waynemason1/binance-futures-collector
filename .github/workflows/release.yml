@@ -1,0 +1,106 @@
+name: Release
+
+# Builds the collector for the common platforms and attaches the binaries to the
+# GitHub release, so a user can download one file and run it without installing
+# Rust, Node, Python or Docker. Triggered by pushing a version tag.
+#
+#   git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0
+#
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # Intel macOS is deliberately not built: GitHub is retiring the macos-13
+      # runner and the job sat queued indefinitely waiting for one. Apple stopped
+      # selling Intel Macs in 2023, and anyone on one can still build from source.
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            label: macOS (Apple silicon)
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x86_64)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Check it runs
+        run: ./target/${{ matrix.target }}/release/binance-futures-collector --version
+
+      # The tarball carries the example config and exclusions alongside the binary,
+      # because the collector will not start without a config and the first thing a
+      # user needs to do is copy the example.
+      - name: Package
+        run: |
+          set -euo pipefail
+          name="binance-futures-collector-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/binance-futures-collector" "dist/$name/"
+          cp config.example.toml exclusions.toml README.md LICENSE "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          # Generate the checksum from inside dist/ so the file records a bare
+          # filename. With a path in it, `shasum -c` looks for dist/... relative to
+          # wherever the user downloaded it and fails to find the archive.
+          ( cd dist && shasum -a 256 "$name.tar.gz" | tee "$name.tar.gz.sha256" )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz*
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            Download the archive for your platform below, unpack it, and run:
+
+            ```sh
+            tar -xzf binance-futures-collector-*.tar.gz
+            cd binance-futures-collector-*/
+            cp config.example.toml config.toml
+            ./binance-futures-collector
+            ```
+
+            No Rust, Node, Python or Docker required for the collector itself.
+            The dashboard is optional and needs the repository plus Docker or the
+            native toolchain; see the README.
+
+            Verify a download with the matching `.sha256` file:
+
+            ```sh
+            shasum -a 256 -c binance-futures-collector-*.tar.gz.sha256
+            ```

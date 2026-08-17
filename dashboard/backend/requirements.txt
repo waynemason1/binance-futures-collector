@@ -1,0 +1,5 @@
+fastapi>=0.110
+# imported directly in server.py; declared rather than relying on FastAPI to pull it in
+pydantic>=2
+uvicorn[standard]>=0.29
+tomlkit>=0.12

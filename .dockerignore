@@ -1,0 +1,14 @@
+target
+data
+logs
+.git
+.github
+config.toml
+config.toml.bak.*
+setup.sh
+INTERNAL_NOTES.md
+dashboard/frontend/node_modules
+dashboard/frontend/dist
+dashboard/.venv
+**/__pycache__
+*.pyc

@@ -1,0 +1,63 @@
+# Symbol exclusion list for the collector.
+# Symbols matched here are skipped during discovery. A small always-collect
+# set (BTC, DOGE) is hardcoded in the collector itself — see the end of
+# discover_symbols() in src/collectors/symbol_discovery.rs — and overrides
+# every rule in this file.
+
+# Stablecoins — excluded (low volatility, little microstructure of interest).
+excluded_stablecoins = [
+    "DAI",
+    "USDC",
+    "TUSD",
+    "USTC",
+    "FDUSD",
+    "BFUSD",
+    "USDE",
+    "USD1",
+    "USDP",
+    "PYUSD",
+    "RLUSD",
+    "USDD",
+    "USDQ",
+    "USDR",
+    "USDTB",
+    "USDY",
+    "XUSD",
+    "AEUR",
+    "EUR",
+    "EURI",
+    "EURC",
+    "USDM",
+    "USDS",
+]
+
+# Large-cap base assets to exclude by default. Adjust to taste — leaving this
+# empty collects everything the exchange lists. DOGE/SHIB are re-included below.
+excluded_top30 = [
+    "DOGE",
+    "LEO",
+    "LTC",
+    "XMR",
+    "SHIB",
+    "CRO",
+    "ZEC",
+]
+
+# Base assets to keep even though they appear in `excluded_top30`.
+memecoin_exceptions = [
+    "DOGE",
+    "SHIB",
+]
+
+# Individual problematic pairs to exclude (full symbol incl. USDT suffix).
+excluded_symbols = [
+    "MONPROUSDT",  # invalid symbol on some venues
+    "MONUSDT",     # pre-market contract
+    "USDPUSDT",    # dead pair — no order-book updates, constant attach timeouts
+    "币安人生USDT",   # non-ASCII symbol — causes API errors
+]
+
+# NOTE: there is deliberately no `critical_symbols` key here — the always-
+# collect set is hardcoded in src/collectors/symbol_discovery.rs so a config
+# edit can't silently drop the anchor symbols the dashboard's replay and
+# validation views assume exist (BTCUSDT, DOGEUSDT).

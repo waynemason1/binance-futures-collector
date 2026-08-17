@@ -1,0 +1,52 @@
+[package]
+name = "binance-futures-collector"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = "0.4.38"
+log = "0.4"
+flexi_logger = "0.27"
+anyhow = "1.0"
+futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "http2"] }
+csv = "1.3"
+toml = "0.8"
+dashmap = "5.5"
+parking_lot = "0.12"
+rand = "0.8"
+rustc-hash = "1.1"  # FxHashMap for faster non-cryptographic hashing
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+# jemalloc as the global allocator on Linux (where this runs). glibc's arena allocator
+# does not return freed pages to the OS for a long-running, many-threaded, high-churn
+# process, so RSS ratchets upward over days; jemalloc + background_thread/decay (see
+# .cargo/config.toml) returns pages so RSS stays bounded. Non-Linux builds are unaffected.
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+# Unwind on panic (not abort): a panicking task runs its destructors, flushing
+# buffered rows to disk, and the process keeps collecting the other symbols.
+
+[profile.dev]
+opt-level = 1
+
+[profile.profiling]
+inherits = "release"
+debug = true              # Enable debug symbols for profiling
+strip = false             # Don't strip symbols
+lto = false               # Disable LTO for faster builds
+codegen-units = 16        # Faster builds
+incremental = true        # Enable incremental compilation

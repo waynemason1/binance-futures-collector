@@ -1,0 +1,111 @@
+[exchange]
+name = "binance"
+market = "futures"
+websocket_url = "wss://fstream.binance.com"
+rest_api_url = "https://fapi.binance.com"
+rest_futures_data_url = "https://fapi.binance.com"
+
+# Optional Binance API key. NOT required — this collector reads only PUBLIC
+# market-data endpoints (websocket streams + public REST), which need no auth.
+# Provide one only if you want requests associated with your account. If you do,
+# create a READ-ONLY key: enable "Reading" only, DISABLE spot/futures trading and
+# withdrawals, and IP-restrict it. Never use a key with trade/withdraw permissions.
+# api_key = ""
+
+[collection]
+# Re-check exchangeInfo every N minutes: new listings are logged (capture starts
+# on the next restart) and delistings are torn down mid-run — a removal needs
+# absence from two consecutive checks, so delist latency is ~2x this value.
+symbol_discovery_interval_minutes = 10
+
+# Explicit symbol whitelist. Non-empty restricts collection to these and skips
+# discovery entirely — including delisting detection; empty (default) collects
+# every tradeable USDT-M perpetual.
+symbols = []
+# Example: symbols = ["btcusdt", "ethusdt", "solusdt"]
+
+[orderbook]
+depth_limit = 50                      # REST snapshot depth for the initial sync
+snapshot_interval_seconds = 600       # periodic snapshot interval
+# Binance diff-depth supports 100 / 250 / 500 ms. 500 ms keeps full microstructure
+# detail while cutting storage ~80% against 100 ms.
+update_speed_ms = 500
+
+resync_cooldown_seconds = 30          # minimum gap between resync attempts
+resync_backoff_factor = 1.5           # resync backoff multiplier
+max_resync_backoff_seconds = 120      # resync backoff ceiling
+attach_bridge_timeout_seconds = 900   # attach timeout for low-volume symbols
+snapshot_http_timeout_seconds = 60    # HTTP timeout for a snapshot fetch
+
+[websocket]
+reconnect_delay_ms = 2000             # initial reconnect backoff
+max_reconnect_delay_ms = 60000        # reconnect backoff ceiling
+max_reconnect_attempts = 10           # consecutive failures before the log escalates to error; reconnection never gives up
+ping_interval_seconds = 20            # keep-alive ping
+heartbeat_miss_reconnect = 3          # missed heartbeats before reconnect
+
+# Per-symbol ring buffer bounds. The buffer is drained continuously (every 500 ms)
+# and the real time bound is ring_buffer_seconds, so the steady-state fill is a few
+# hundred entries. Capacity is pre-allocated per symbol, so 1024 keeps ample
+# headroom over that while roughly halving the backing store at ~500 symbols vs the
+# old 2000.
+ring_buffer_capacity = 1024
+ring_buffer_seconds = 60
+
+ws_buffer_delay_seconds = 2           # buffer the diff stream before the first snapshot
+batch_gap_seconds = 30                # gap between connection batches at startup
+batch_stability_min_messages = 50     # messages per symbol required before the next batch
+
+[rest_intervals]
+funding_rates_seconds = 300           # funding settles every 8h; poll loosely
+mark_price_klines_seconds = 90
+index_price_klines_seconds = 90
+open_interest_seconds = 600
+premium_index_klines_seconds = 120
+long_short_ratio_seconds = 300
+taker_buy_sell_ratio_seconds = 300
+# Request-WEIGHT budget per minute for /fapi/* endpoints. Binance's per-IP limit is
+# 2400/min; the collector enforces a rolling-60s weight budget and a circuit breaker
+# that pauses all requests on a 429/418. 2000 leaves headroom for bursts.
+max_weight_per_min = 2000
+# Request-COUNT budget over 5 minutes for /futures/data/* (long/short, taker), which
+# Binance limits separately and more tightly than the main weight budget. This paces
+# the startup burst so it can't trip a ban; each poll fetches many 5-minute buckets,
+# so the slow cadence loses no data.
+max_data_requests_per_5min = 600
+
+[output]
+base_dir = "./data/futures"
+# Per-file write buffer. Kept small: data flushes every second and thousands of
+# files are open at once, so a large per-file buffer is the main driver of RSS.
+buffer_size_kb = 64
+flush_interval_seconds = 1            # flush cadence
+max_depth_buffer_rows = 1000          # depth rows buffered before a size-triggered flush
+
+[gaps]
+base_dir = "./data/gaps"
+
+[logging]
+level = "info"
+log_file = "./logs/collector.log"
+max_log_files = 10
+
+[proxy]
+enabled = false
+user = "your-proxy-user"
+password = "your-proxy-password"
+host = "proxy.example.com"
+# Optional rotating-proxy port pools, drawn from when enabled.
+uk_ports = [8001, 8002, 8003, 8004, 8005, 8025, 8026]
+au_ports = [8006, 8007, 8008, 8009, 8010, 8027, 8028]
+jp_ports = [8018, 8019, 8020, 8021, 8022, 8023, 8024]
+dk_ports = [8011, 8012, 8013, 8014, 8015, 8016, 8017]
+num_ws_batches = 10                   # number of websocket connection batches
+tracking_enabled = false              # per-proxy usage tracking (off by default to save memory)
+
+[storage]
+# Optional disk-saving knob: symbols listed here still stream klines and all REST
+# metrics, but their raw trades / order-book depth are not persisted. Useful to skip
+# a very high-volume symbol's depth firehose on a small disk. Empty = persist all.
+disable_trade_persistence_for = []
+disable_orderbook_persistence_for = []
