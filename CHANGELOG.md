@@ -11,8 +11,8 @@ system; this is the capture layer, standalone.
 
 ### Capture
 
-- Full Binance USDT-M perpetual futures tape: every symbol, twelve streams across
-  eleven on-disk directories, to plain CSV.
+- Full Binance USDT-M perpetual futures tape: every symbol, every stream, eleven
+  data types on disk, to plain CSV.
 - Order books reconstructed from a REST snapshot bridged onto the buffered diff
   stream, with `U`/`u`/`pu` continuity verified at every step. Every discontinuity
   is recorded rather than hidden.

@@ -9,38 +9,31 @@
 > [CONTRIBUTING.md](CONTRIBUTING.md).
 
 A single-process collector that captures the full Binance USDT-M perpetual
-futures tape (every symbol, twelve capture streams across eleven on-disk
-directories) to plain CSV, gap-tracked, on commodity hardware.
+futures tape to plain CSV: every symbol, the order book (diffs and snapshots),
+trades, klines, liquidations and the polled derivatives metrics, gap-tracked,
+on commodity hardware. It runs the whole ~500-symbol universe on a fraction of
+one CPU core and a bounded memory footprint, from a single residential
+connection: no colocation, no proxies, no API keys.
 
-![Replay: scrubbing a captured day and playing the order book back across a liquidation cascade](docs/replay.gif)
+![Capture Desk console: live throughput, per-stream health, collector resource use, and the symbol explorer](docs/dashboard.png)
 
-*The dashboard's Replay tab: a captured liquidation cascade, rebuilt from the
-CSVs on disk and played back.*
+*The bundled dashboard, Capture Desk, three days into a run: 523 symbols on
+disk, ~1,165 messages/s, 11/11 streams live, 678 MB resident, 20 reconnects
+absorbed, no recorded gaps. Everything on this page is read from the CSVs the
+collector writes.*
 
-It runs the whole ~500-symbol universe on a fraction of one CPU core and a
-bounded memory footprint, from a single residential connection: no colocation,
-no proxies, no API keys. The order book is reconstructed from a REST snapshot
-plus the diff stream with full update-ID continuity checking; every
-discontinuity and recovery is recorded, so a downstream consumer knows exactly
-where the tape is whole and where it isn't. The included dashboard shows that
-health live: per-stream freshness, coverage, and a replay/validation view that
-re-verifies any captured day from the files on disk. The validators are
-themselves tested against seeded corruption, so "the data is clean" is a
+The order book is reconstructed from a REST snapshot plus the diff stream with
+full update-ID continuity checking; every discontinuity and recovery is
+recorded, so a downstream consumer knows exactly where the tape is whole and
+where it isn't. The dashboard shows that health live, and its Validation and
+Replay tabs re-verify any captured day from the files on disk. The validators
+are themselves tested against seeded corruption, so "the data is clean" is a
 checked claim, not a hope.
 
 Raw capture only. No signals, no feature engineering. The job is to get the
 data down, correctly, and keep it down for weeks at a time. Extracted and
 hardened from a six-month private trading-research system; this repo is the
 capture layer, open-sourced standalone.
-
-**Two names, one repo.** The collector itself is `binance-futures-collector`:
-the Rust binary that does the capturing, and the only part you need. The bundled
-dashboard is **Capture Desk**, which is why the containers and images carry that
-name. The dashboard is optional and reads the collector's output off disk rather
-than talking to it, so the collector runs perfectly well without it. (The one
-concession in the other direction: discovery always includes `btcusdt` and
-`dogeusdt`, because the dashboard's replay and validation views assume they are
-present.)
 
 ---
 
@@ -49,7 +42,7 @@ present.)
 | Stream | Transport | Notes |
 |---|---|---|
 | Order book depth (diff) | WebSocket | 100 / 250 / 500 ms; snapshot + diff reconstruction |
-| Order book snapshots | WebSocket + REST | initial sync, bridge attach, and periodic re-serialization |
+| Order book snapshots | REST + in-memory | initial sync and bridge attach from `/fapi/v1/depth`; periodic re-serialisation of the live book |
 | Aggregated trades | WebSocket | deduplicated by aggregate trade ID |
 | Klines (1m) | WebSocket | per symbol |
 | Liquidations | WebSocket | market-wide `!forceOrder@arr`, filtered to the collected USDT-M universe |
@@ -61,11 +54,14 @@ present.)
 | Index-price klines | REST | 1m |
 | Premium-index klines | REST | 1m |
 
-The bucketed series (klines, ratios) are polled as a window of historical
-buckets rather than the latest value alone, so the full native series is
-preserved even at slow poll rates; funding and open interest are point-in-time
-metrics and are sampled on each poll. Either way the endpoints stay well under
-their rate limits (see [rate limiting](#rate-limiting)).
+On disk that is eleven data-type directories: depth diffs and snapshots share
+`orderbooks/`, and the three long/short ratios share `long_short_ratio/`
+(distinguished by a `ratio_type` column). The bucketed series (klines, ratios)
+are polled as a window of historical buckets rather than the latest value
+alone, so the full native series is preserved even at slow poll rates; funding
+and open interest are point-in-time metrics and are sampled on each poll.
+Either way the endpoints stay well under their rate limits (see
+[rate limiting](#rate-limiting)).
 
 ---
 
@@ -156,7 +152,7 @@ SERVE_STATIC=1 .venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 80
 Data lands under `<data>/futures/<datatype>/<symbol>/<date>/`, logs under `./logs/`,
 and a heartbeat at `<data>/stats/stats.json`. The process raises its own
 file-descriptor limit and needs no elevated privileges. Startup across ~500 symbols
-is staged over ~30–40 minutes to stay inside Binance's rate limits; after that it
+is staged over ~40 minutes to stay inside Binance's rate limits; after that it
 runs indefinitely.
 
 An API key is not required. If you want requests associated with your account,
@@ -188,12 +184,14 @@ repeated as an ISO-8601 string for grep-ability.
 ### A capture layer, not a database
 
 The on-disk format is intentional. The collector's one job is durable capture,
-so it writes append-only, Hive-partitioned files (`datatype/symbol/date`) and
-leaves storage and query to a downstream layer of your choosing. Append-only
-flat files are a hard capture target to beat: nothing to corrupt, no
-schema migration, crash-safe to the line, and readable with `grep` or `pandas`
-and zero tooling. A database in the write path would only add a failure mode: if
-it goes down, collection stops.
+so it writes append-only files partitioned by `datatype/symbol/date` and leaves
+storage and query to a downstream layer of your choosing. Append-only flat files
+are a hard capture target to beat: no schema migration, no database in the write
+path to go down and stop collection, and readable with `grep` or `pandas` and
+zero tooling. Write buffers are flushed on a one-second cadence (depth buffers
+also at 1,000 rows), so a hard kill costs at most the last second or so of
+buffered rows per file, and a clean `SIGTERM` loses nothing (see
+[Upgrading](#upgrading)).
 
 CSV trades compactness and typing for legibility and portability, which is the
 right trade for raw capture. Querying is a separate concern, and deliberately left
@@ -203,6 +201,67 @@ already use to read CSV will read it.
 For slicing a window without writing any code, the dashboard's Export tab does it
 from the UI: pick a symbol, a time range and the data types, and get either a
 bundle of native CSVs or a single time-aligned matrix on a 1-minute grid.
+
+---
+
+## Monitoring dashboard
+
+`dashboard/` is a small FastAPI + React app, **Capture Desk**, that reads the
+collector's output directly off disk, with no database and no connection to
+the collector process. It is optional: the collector runs perfectly well
+without it. (The one concession in the other direction: discovery always
+includes `btcusdt` and `dogeusdt`, because the Replay and Validation tabs assume
+they are present.) The containers and images carry the Capture Desk name; the
+Rust binary, and the only part you need, is `binance-futures-collector`.
+
+Seven tabs:
+
+- **Console** (screenshot above): live throughput, per-stream freshness across
+  all eleven streams, collector RSS / CPU / open file descriptors, reconnect
+  count, and a per-symbol explorer with 1-minute candles, live tape and depth.
+- **Coverage**: which UTC days each stream has captured, per-stream symbol and
+  file counts, and any symbols that have gone quiet.
+- **Validation**: re-verifies any captured day from the files on disk:
+  update-ID continuity of the depth tape, a full order-book rebuild from the
+  newest snapshot (a day passes only with zero continuity breaks and zero
+  crossed books), and per-type invariants such as 1-minute kline continuity and
+  OHLC bounds, trade-ID uniqueness and monotonicity, bounded funding,
+  `long + short ≈ 1`, `oi_value = OI × mark`, and `datetime_utc` agreeing with
+  `timestamp_ms`. Every validator has a test that seeds exactly the corruption
+  it claims to catch (`dashboard/backend/tests/test_validators.py`).
+- **Replay**: below.
+- **Export**: a symbol, a time range and a set of data types, out as either a
+  zip of native CSVs or one time-aligned matrix on a 1-minute grid.
+- **Config**: edits `config.toml` in place and requests a restart by dropping a
+  sentinel file that `scripts/supervise.sh` (or Compose) acts on; the dashboard
+  never spawns or kills a process itself.
+- **Logs**: tail and download the collector log.
+
+> **Trust model.** The dashboard has no authentication and exposes state-changing
+> endpoints (edit config, request restart), so it binds to `127.0.0.1` by default
+> and is meant for localhost or a trusted LAN. Put it behind a reverse proxy with
+> auth before exposing it beyond that. State-changing POSTs also require an
+> `X-Capture-Desk: 1` header (the UI sends it; add it to scripted calls), which
+> stops cross-site request forgery from a browser that can reach the port.
+
+### Replay
+
+![Replay: scrubbing a captured day; the order book, depth profile, trade tape and derivatives context are rebuilt from disk at each instant](docs/replay.gif)
+
+*Scrubbing a captured day (BTCUSDT, 2026-07-25) at ×10. At every instant the
+order book, depth profile, trade tape and funding / open-interest / positioning
+context are rebuilt from the CSVs on disk; the ticks along the base of the
+timeline are the day's liquidations.*
+
+The Replay tab rebuilds any captured second from the files on disk: scrub a
+day's timeline and the order book, depth profile, trade tape, and
+funding/OI/positioning context are reconstructed as of that instant, then
+stepped or played forward. The practical use is inspecting events after the
+fact: what the book looked like around a wick, or how a liquidation cluster
+ate through the bids. It doubles as an end-to-end check: if an arbitrary second
+can be rebuilt, the capture around it is whole; the Validation tab tests the
+same property formally. [docs/REPLAY.md](docs/REPLAY.md) covers both the UI and
+the mechanics.
 
 ---
 
@@ -222,11 +281,18 @@ A short tour:
   rolling-window limiters behind a shared circuit breaker. Any `429`/`418`, or a
   near-ceiling used-weight header, pauses every request path together and honours
   `Retry-After`, instead of letting one endpoint hammer the IP into a longer ban.
+  A `418` (IP ban) is never retried.
 - **Bounded memory.** Per-symbol ring buffers have hard caps; the order book is
-  trimmed to the configured depth on every update; per-file write buffers are
-  small by design. The footprint plateaus rather than creeping.
+  trimmed to the configured depth on every update; the trade-dedup window is
+  fixed-size; per-file write buffers are small by design. The footprint plateaus
+  rather than creeping.
 - **Gap accounting.** Recoveries are logged to a per-symbol registry, and the raw
   streams retain the sequence IDs needed to detect any gap in post-processing.
+- **Symbol lifecycle.** Discovery re-runs periodically. A new listing is picked
+  up immediately; a delisting is only acted on after the symbol is absent from
+  two consecutive successful discovery results, and a result that loses more
+  than 10% of the tracked universe at once is treated as exchange maintenance
+  and skipped.
 - **Clean output.** Depth diffs are sorted by update ID before write, trades are
   deduplicated, and headers are written once and flushed immediately so a crash
   can't produce a duplicate-header file.
@@ -240,17 +306,16 @@ reconnect handling, and offline reconstruction, the part most people ask about.
 ## Performance
 
 Measured on the reference deployment, a 4-vCPU / 6 GB Linux VM on a Mac Mini,
-capturing all 523 USDT-M perpetuals (twelve capture streams, eleven on-disk
-directories) at 500 ms depth over a
+capturing all 523 USDT-M perpetuals (every stream) at 500 ms depth over a
 single residential connection:
 
 | Metric | Steady state |
 |---|---|
-| Throughput | ~1,000 messages/s sustained (daily means 1,000–1,200; bursts past 2,000) |
-| CPU | ~0.6 of one core across 4 vCPUs (~40 threads: 8 tokio workers + blocking pool + jemalloc background threads); I/O-bound, nearing one core only during snapshot writes and high-volume bursts |
-| Resident memory | 0.4–0.8 GB sawtooth, bounded; floors and ceilings hold day over day (6.2-day soak, 552 M messages) |
-| Disk | ~35 GB/day measured at 500 ms (varies 30-50 with volatility; plan for ~40) |
-| Cold start | ~30–40 min to full coverage (staggered on purpose) |
+| Throughput | ~1,000–1,200 messages/s sustained (1,165 in the console screenshot above) |
+| CPU | Well under one core: 11% of 4 vCPUs in the screenshot (8 tokio workers + blocking pool + jemalloc background threads); I/O-bound, nearing one core only during snapshot writes and high-volume bursts |
+| Resident memory | ~0.4–0.8 GB sawtooth, bounded; floors and ceilings hold day over day (6.2-day soak, 552 M messages) |
+| Disk | ~40 GB/day at 500 ms (varies 30–50 with volatility) |
+| Cold start | ~40 min to full coverage (staggered on purpose) |
 
 **Memory is bounded by construction and by the allocator.** Every heavy
 structure is capped (fixed per-symbol ring buffers, order books trimmed to
@@ -264,12 +329,18 @@ on clean days and decayed back to baseline within ~48 h after two real network
 incidents. Methodology, charts, and the sampler script itself in
 [`docs/SOAK_TEST.md`](docs/SOAK_TEST.md).
 
-**Startup is staggered on purpose.** Order books come online in batches so a
-restart never fires ~500 REST snapshots at once, the same rate-limit discipline
-that lets a mass reconnect recover cleanly: killing every connection at once
-re-syncs with *zero* resnapshots, and the in-memory book self-heals back to the
-exchange (see [`docs/ORDERBOOK.md`](docs/ORDERBOOK.md)). In normal operation the
-collector runs with zero reconnects and zero rate-limit bans.
+**Reconnects are absorbed, not re-synced.** A dropped WebSocket takes a whole
+batch of symbols down together, so re-snapshotting each one would fire hundreds
+of REST calls into the weight budget and provoke the ban it was trying to avoid.
+Instead the collector reconnects with backoff and keeps going. Binance diffs
+carry absolute quantities, so the in-memory book heals itself as levels update;
+the raw tape records the `pu` break, so the gap is detectable rather than
+hidden; and offline rebuilds re-anchor on the next periodic snapshot. In the
+6.2-day soak, a link flap (~50 reconnects) and an upstream outage (hundreds)
+were both absorbed with zero REST re-snapshots and 523/523 books recovered.
+Startup is staggered for the same reason: order books come online in batches of
+20 so a restart never fires ~500 snapshots at once. Details in
+[`docs/ORDERBOOK.md`](docs/ORDERBOOK.md).
 
 ---
 
@@ -290,34 +361,8 @@ you're most likely to touch:
 
 Symbol exclusions (stablecoins, and any pairs you don't want) live in
 [`exclusions.toml`](exclusions.toml); it's optional. The config path can be
-overridden with `CONFIG_PATH`.
-
----
-
-## Monitoring dashboard
-
-![Capture Desk: live capture health, stream monitor, and the symbol explorer](docs/dashboard.png)
-
-`dashboard/` is a small FastAPI + React app that reads the collector's output
-directly, with no database, and shows live throughput, per-stream status, on-disk
-coverage, and a per-symbol order-book/trade view. It's optional and fully
-decoupled from capture.
-
-> **Trust model.** The dashboard has no authentication and exposes state-changing
-> endpoints (edit config, request restart), so it binds to `127.0.0.1` by default
-> and is meant for localhost or a trusted LAN. Put it behind a reverse proxy with
-> auth before exposing it beyond that. State-changing POSTs also require an
-> `X-Capture-Desk: 1` header (the UI sends it; add it to scripted calls), which
-> stops cross-site request forgery from a browser that can reach the port.
-
-The Replay tab rebuilds any captured second from the files on disk: scrub a
-day's timeline (liquidations marked along the base) and the order book, depth
-profile, trade tape, and funding/OI/positioning context are reconstructed as of
-that instant, then stepped or played forward. If an arbitrary second can be
-rebuilt, the capture around it is whole; the Validation tab tests the same
-property formally, re-verifying update-id continuity, per-type invariants, and
-a full book rebuild for any day on disk. [docs/REPLAY.md](docs/REPLAY.md)
-covers both the UI and the mechanics.
+overridden with `CONFIG_PATH`. The `[proxy]` section is off by default and the
+reference deployment never needed it; it exists for connections that do.
 
 ---
 
